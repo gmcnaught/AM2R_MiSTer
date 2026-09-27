@@ -1,0 +1,87 @@
+name: Build RBF
+
+# Compiles AM2R.qpf with Quartus Prime Lite 17.0 in the raetro/quartus Docker
+# image on a GitHub-hosted runner, applies the same timing gate as
+# scripts/build-fpga.ps1, and uploads the RBF plus the Quartus reports.
+
+on:
+  push:
+    paths:
+      - 'AM2R.*'
+      - 'files.qip'
+      - 'rtl/**'
+      - 'sys/**'
+      - '.github/workflows/build-rbf.yml'
+  pull_request:
+    paths:
+      - 'AM2R.*'
+      - 'files.qip'
+      - 'rtl/**'
+      - 'sys/**'
+      - '.github/workflows/build-rbf.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: build-rbf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (Quartus needs ~24 GB)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: Compile RBF (Quartus Lite 17.0 in Docker)
+        run: |
+          docker run --rm -v "$PWD:/build" raetro/quartus:17.0 \
+            bash -c "cd /build && quartus_sh --flow compile AM2R"
+
+      - name: Upload Quartus reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quartus-reports
+          path: |
+            output_files/*.rpt
+            output_files/*.summary
+          if-no-files-found: warn
+
+      - name: Fit and timing summary
+        run: |
+          cat output_files/AM2R.fit.summary
+          cat output_files/AM2R.sta.summary
+          {
+            echo '### Fit'
+            echo '```'
+            cat output_files/AM2R.fit.summary
+            echo '```'
+            echo '### Timing'
+            echo '```'
+            cat output_files/AM2R.sta.summary
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Timing gate
+        run: |
+          if grep -q 'Timing requirements not met' output_files/AM2R.sta.rpt; then
+            echo '::error::TimeQuest reports unmet timing requirements.'
+            exit 1
+          fi
+
+      - name: Upload RBF
+        uses: actions/upload-artifact@v4
+        with:
+          name: AM2R-rbf
+          path: output_files/AM2R.rbf
+          if-no-files-found: error
